@@ -6,7 +6,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 )
@@ -72,9 +71,17 @@ func (s *Server) Serve(conn net.Conn) {
 		return
 	}
 
-	fmt.Fprintf(os.Stdout, "%+v", req)
-	conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 17\r\n\r\n"))
-	conn.Write([]byte("Hello from server"))
+	response := Response{
+		Version:    req.Version,
+		StatusCode: 200,
+		StatusText: "OK",
+		Headers:    make(map[string]string),
+	}
+	body := fmt.Sprintf("Your URL was: %s", req.URL)
+	response.Headers["Content-Length"] = strconv.Itoa(len(body))
+
+	response.body = body
+	ResponseWriter(conn, response)
 }
 
 func (s *Server) parseRequest(conn net.Conn) (*Request, error) {
@@ -133,6 +140,22 @@ func (s *Server) parseRequest(conn net.Conn) (*Request, error) {
 	}
 
 	return request, nil
+}
+
+func ResponseWriter(conn net.Conn, resp Response) {
+	writer := bufio.NewWriter(conn)
+
+	responseLine := fmt.Sprintf("%s %d %s\r\n", resp.Version, resp.StatusCode, resp.StatusText)
+	writer.WriteString(responseLine)
+
+	for k, v := range resp.Headers {
+		header := fmt.Sprintf("%s:%s\r\n", k, v)
+		writer.WriteString(header)
+	}
+
+	writer.WriteString("\r\n")
+	writer.WriteString(resp.body)
+	defer writer.Flush()
 }
 
 func main() {
