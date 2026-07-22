@@ -10,11 +10,38 @@ import (
 	"strings"
 )
 
+const (
+	StatusOK      = 200
+	StatusCreated = 201
+
+	StatusBadRequest = 400
+	StatusNotFound   = 404
+
+	StatusInternalServerError = 500
+)
+
+func StatusText(code int) string {
+	switch code {
+	case StatusOK:
+		return "OK"
+	case StatusCreated:
+		return "Created"
+	case StatusBadRequest:
+		return "Bad request"
+	case StatusNotFound:
+		return "Not found"
+	case StatusInternalServerError:
+		return "Internal server error"
+	default:
+		return "Invalid code"
+	}
+}
+
 // Server type defines a HTTP server
 type Server struct {
 	listener net.Listener
 	Addr     string
-	routes   map[string]string
+	routes   map[string]Handler
 }
 
 // Request type defines a HTTP request
@@ -35,10 +62,65 @@ type Response struct {
 	body       string
 }
 
+type Handler interface {
+	ServeHTTP(*Request, ResponseWriter)
+}
+
+type HandlerFunc func(*Request, ResponseWriter)
+
+func (f HandlerFunc) ServeHTTP(r *Request, w ResponseWriter) {
+	f(r, w)
+}
+
+type ResponseWriter interface {
+	// Write will write a string back to the connection as HTTP response.
+	//  This will be mainly used for writing the body of the response.
+	WriteBody(string)
+
+	// SendCode() will send HTTP response code to the client
+	SendCode(int)
+
+	// WriteHeader() will write response header to the client
+	WriteHeader(key, value string)
+
+	// Write() will flush the buffer to the connection.
+	Write()
+}
+
+type responseWriter struct {
+	w *bufio.Writer
+}
+
+func (r *responseWriter) Write() {
+	r.w.Flush()
+}
+
+func (r *responseWriter) WriteBody(s string) {
+	r.w.WriteString("\r\n")
+	r.w.WriteString(s)
+
+}
+
+func (r *responseWriter) SendCode(code int) {
+	resLine := fmt.Sprintf("HTTP/1.1 %d %s\r\n", code, StatusText(code))
+	r.w.WriteString(resLine)
+}
+
+func (r *responseWriter) WriteHeader(key, value string) {
+	h := fmt.Sprintf("%s: %s\r\n", key, value)
+	r.w.WriteString(h)
+
+}
+
 func NewServer(addr string) *Server {
 	return &Server{
-		Addr: addr,
+		Addr:   addr,
+		routes: make(map[string]Handler),
 	}
+}
+
+func (s *Server) AddRoute(path string, handler Handler) {
+	s.routes[path] = handler
 }
 
 func (s *Server) ListenAndServe() error {
@@ -71,19 +153,16 @@ func (s *Server) Serve(conn net.Conn) {
 		return
 	}
 
-	response := Response{
-		Version:    req.Version,
-		StatusCode: 200,
-		StatusText: "OK",
-		Headers:    make(map[string]string),
+	resWriter := &responseWriter{w: bufio.NewWriter(conn)}
+
+	url := req.URL
+	for path, handler := range s.routes {
+		if path == url {
+			handler.ServeHTTP(req, resWriter)
+		}
 	}
-	body := fmt.Sprintf("Your URL was: %s", req.URL)
-	response.Headers["Content-Length"] = strconv.Itoa(len(body))
 
-	response.body = body
-	ResponseWriter(conn, response)
 }
-
 func (s *Server) parseRequest(conn net.Conn) (*Request, error) {
 	reader := bufio.NewReader(conn)
 	request := &Request{
@@ -142,25 +221,17 @@ func (s *Server) parseRequest(conn net.Conn) (*Request, error) {
 	return request, nil
 }
 
-func ResponseWriter(conn net.Conn, resp Response) {
-	writer := bufio.NewWriter(conn)
-
-	responseLine := fmt.Sprintf("%s %d %s\r\n", resp.Version, resp.StatusCode, resp.StatusText)
-	writer.WriteString(responseLine)
-
-	for k, v := range resp.Headers {
-		header := fmt.Sprintf("%s:%s\r\n", k, v)
-		writer.WriteString(header)
-	}
-
-	writer.WriteString("\r\n")
-	writer.WriteString(resp.body)
-	defer writer.Flush()
+func hello(r *Request, w ResponseWriter) {
+	w.SendCode(StatusOK)
+	w.WriteHeader("Content-Length", "18")
+	w.WriteBody("Hello from server\n")
+	w.Write()
 }
 
 func main() {
 	// Let's create a server
 	srv := NewServer("localhost:8080")
+	srv.AddRoute("/hello", HandlerFunc(hello))
 
 	err := srv.ListenAndServe()
 	if err != nil {
